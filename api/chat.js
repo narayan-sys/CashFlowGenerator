@@ -164,7 +164,18 @@ async function callLLM({ apiKey, messages, context }) {
       body: JSON.stringify({
         contents: geminiContents,
         systemInstruction: { parts: [{ text: systemPrompt }] },
-        generationConfig: { maxOutputTokens: 650 },
+        generationConfig: {
+          maxOutputTokens: 800,
+          // Gemini 2.5/3.x models "think" internally before answering by
+          // default, and those thinking tokens are deducted from the SAME
+          // maxOutputTokens budget as the visible reply — with a modest
+          // budget like this, that was silently eating the whole response
+          // and leaving little/nothing for the actual answer (the cause of
+          // "incomplete response"). This is a guidance chatbot, not a task
+          // needing deep multi-step reasoning, so thinking is switched off
+          // entirely to guarantee the full budget goes to the answer.
+          thinkingConfig: { thinkingBudget: 0 },
+        },
       }),
     }
   );
