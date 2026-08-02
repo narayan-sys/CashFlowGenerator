@@ -1,0 +1,5 @@
+{
+  "rewrites": [
+    { "source": "/", "destination": "/cash_flow_generator_1.html" }
+  ]
+}
