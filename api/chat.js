@@ -142,10 +142,16 @@ async function callLLM({ apiKey, messages, context }) {
     ? `${SYSTEM_PROMPT}\n\nContext — the user's current statement figures and any live anomaly flags (may be absent if they haven't generated a statement yet):\n${context}`
     : SYSTEM_PROMPT;
 
-  // gemini-2.5-flash: good quality/quota balance for a guidance chatbot.
-  // If you hit the daily free-tier cap often, try "gemini-2.5-flash-lite"
-  // instead, which trades a little quality for a noticeably higher quota.
-  const model = 'gemini-2.5-flash';
+  // gemini-3.6-flash: Google's current stable "flash" model (as of mid-2026)
+  // — good quality/quota balance for a guidance chatbot. Previously this used
+  // "gemini-2.5-flash", which newer API keys can no longer access (Google
+  // returns a 404 "no longer available to new users" — the 2.5 family isn't
+  // gone, just restricted for new keys/projects). If you hit the daily
+  // free-tier cap often, try "gemini-3.5-flash-lite" instead, which trades a
+  // little quality for a noticeably higher quota. Check
+  // https://ai.google.dev/gemini-api/docs/models for the current lineup if
+  // this ever 404s again — Google's flash-tier naming moves fairly often.
+  const model = 'gemini-3.6-flash';
 
   const resp = await fetch(
     `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`,
