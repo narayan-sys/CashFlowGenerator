@@ -172,9 +172,19 @@ async function callLLM({ apiKey, messages, context }) {
           // budget like this, that was silently eating the whole response
           // and leaving little/nothing for the actual answer (the cause of
           // "incomplete response"). This is a guidance chatbot, not a task
-          // needing deep multi-step reasoning, so thinking is switched off
-          // entirely to guarantee the full budget goes to the answer.
-          thinkingConfig: { thinkingBudget: 0 },
+          // needing deep multi-step reasoning, so thinking is turned down
+          // as far as this model allows.
+          //
+          // IMPORTANT: thinkingBudget (a number, e.g. 0 to fully disable
+          // thinking) is the Gemini 2.5-series parameter. Gemini 3 models
+          // (gemini-3.6-flash, 3.5-flash, etc.) use thinkingLevel instead —
+          // sending thinkingBudget to a Gemini 3 model returns a 400
+          // "invalid argument" error. Gemini 3 Flash also can't fully
+          // disable thinking (no "off" setting), so "low" is the closest
+          // equivalent: minimizes latency/cost while staying valid.
+          // If you switch the `model` back to a Gemini 2.5-series string,
+          // swap this back to: thinkingConfig: { thinkingBudget: 0 }
+          thinkingConfig: { thinkingLevel: 'low' },
         },
       }),
     }
