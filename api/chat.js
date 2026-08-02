@@ -112,11 +112,16 @@ module.exports = async (req, res) => {
     res.status(200).json({ reply });
   } catch (err) {
     console.error('chat function error:', err);
-    const quotaLikely = /429|quota|rate/i.test(String(err && err.message));
+    const msg = String(err && err.message || err);
+    const quotaLikely = /429|quota|rate/i.test(msg);
     res.status(502).json({
       error: quotaLikely
         ? "Gemini's free daily quota may be exhausted for this project — it resets daily. Try again later, or upgrade to a paid Gemini tier if this happens often."
-        : 'Upstream LLM request failed.',
+        // Include the real upstream error text (truncated) instead of a
+        // generic message — this is what actually lets you diagnose a bad
+        // API key, a disabled API, a wrong model name, etc. without needing
+        // to open Vercel's function logs.
+        : `Upstream LLM request failed: ${msg.slice(0, 400)}`,
     });
   }
 };
