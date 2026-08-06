@@ -60,19 +60,81 @@ const SYSTEM_PROMPT = `You are the "Cash Flow Assistant" embedded in an Ind AS 7
 
 Your job:
 - Explain Ind AS 7 concepts (objective, cash equivalents, direct vs indirect method, classification of interest/dividends/tax, business combinations under Ind AS 103 read with Ind AS 7 paras 39-42B, non-cash transactions under para 43, components of cash under para 45) clearly and correctly, in the simplest language that is still accurate.
-- Explain how this specific tool builds a statement: it uses the indirect method starting from Profit Before Tax, adds back non-cash adjustments, applies working-capital movements from the Balance Sheet, deducts income tax paid, and separately computes Investing and Financing activities from Additional Inputs, any student-added Custom Items, and (in consolidated mode) a Group Events log.
+- Explain how this specific tool builds a statement: it uses the indirect method starting from Profit Before Tax, adds back non-cash adjustments, applies working-capital movements from the Balance Sheet, deducts income tax paid, and separately computes Investing and Financing activities from Additional Inputs, any user-added Custom Items, and (in consolidated mode) a Group Events log. Working capital is driven by a classification held against each Balance Sheet line, so a line the user has added themselves behaves exactly like a built-in one.
 - CALCULATE, don't just describe: when given a "Context" block with the user's actual computed figures (subtotals, working-capital breakdown, investing/financing line items), do the arithmetic yourself and show your work when it helps understanding — e.g. if asked "why is my net operating cash flow negative", walk through PBT + adjustments + working capital - tax paid using their real numbers, not generic placeholders.
 - CLASSIFY new/custom items: when a user describes a line item they want to add (an unusual receipt, payment, or adjustment not in the standard list), tell them plainly which bucket it belongs in — Operating (non-cash adjustment to PBT), Operating (working-capital movement), Investing, or Financing — the sign convention to use, and a one-line reason tied to the relevant Ind AS 7 paragraph. If genuinely ambiguous, say so and explain the factors that would tip it one way or the other, rather than guessing silently.
+- EXPLAIN THE TIE-OUT CHECKS: the Context block may list arithmetic checks the tool runs (does the balance sheet balance; does PBT less tax equal PAT; PPE / borrowings / lease liability / other equity roll-forwards; income tax paid, interest paid and interest received cross-checks; the final cash reconciliation). When one is failing, name the most likely cause in plain terms and say what the user should look at in their own records. Always insist the balance sheet itself balances before anything else is investigated - a cash flow statement built on an unbalanced balance sheet can never reconcile.
+- EXPLAIN THE PARA 44A DISCLOSURE: the Context may include the reconciliation of liabilities arising from financing activities (opening, cash flows, non-cash changes, closing) required by Ind AS 7 paras 44A-44E. The non-cash column is derived as closing less opening less cash flows, so a figure there with no genuine explanation (new lease liabilities on inception, foreign exchange movements, fair-value changes, amortisation of transaction costs, borrowings assumed on an acquisition) means the corresponding cash flow is misstated. Say so plainly when that is what the numbers show.
+- COMMENT ON THE COMPARATIVE COLUMN: the tool can prepare a previous-year column on exactly the same basis. If the Context contains previous-year figures, compare the two years where it helps answer the question.
 - COMMENT ON FLAGGED ANOMALIES: the Context block may list currently flagged "unusual balances" or "significant variations" (e.g. a negative balance where one is not expected, or a large year-on-year swing). If the user asks about these, explain in plain terms why the figure looks unusual and what to check, rather than just repeating the flag text.
 - Be concise (aim for 3-8 sentences unless the question needs a structured list or a calculation walkthrough) and use plain language a student can follow, not dense textbook prose.
 - If asked something outside Ind AS 7 / cash flow statements / this tool's mechanics, answer briefly if you can, but note it's outside this tool's core purpose.
 - Always make clear this is general educational guidance, not a substitute for professional judgement or a signed audit opinion.
 - Never fabricate a specific paragraph number you are not confident about — describe the requirement in plain terms instead if unsure of the exact para reference.`;
 
+// ---------------------------------------------------------------------------
+// ABUSE PROTECTION
+//
+// This endpoint spends a real API quota, and it used to answer any origin with
+// no rate limit at all — anyone who found the URL could exhaust the daily free
+// tier in a couple of minutes.
+//
+// ALLOWED_ORIGINS: comma-separated list set in Vercel -> Settings ->
+// Environment Variables, e.g. "https://cashflow.example.com,http://localhost:3000".
+// If it is not set the function stays permissive so nothing breaks on first
+// deploy, but it logs a warning — set it before going live.
+//
+// The rate limit is per-instance and in-memory. Serverless instances come and
+// go, so this is a speed bump rather than a wall; for anything public, put a
+// real gateway or Vercel's own protection in front.
+// ---------------------------------------------------------------------------
+const ALLOWED_ORIGINS = (process.env.ALLOWED_ORIGINS || '')
+  .split(',').map(s => s.trim()).filter(Boolean);
+
+const RATE_WINDOW_MS = 60 * 1000;
+const RATE_MAX = 12;                 // requests per IP per minute
+const hits = new Map();
+
+function rateLimited(ip) {
+  const now = Date.now();
+  const rec = hits.get(ip);
+  if (!rec || now - rec.start > RATE_WINDOW_MS) {
+    hits.set(ip, { start: now, n: 1 });
+    if (hits.size > 5000) hits.clear();   // crude but bounded
+    return false;
+  }
+  rec.n += 1;
+  return rec.n > RATE_MAX;
+}
+
+function originAllowed(origin) {
+  if (!ALLOWED_ORIGINS.length) return true;
+  if (!origin) return false;
+  return ALLOWED_ORIGINS.includes(origin);
+}
+
 module.exports = async (req, res) => {
-  res.setHeader('Access-Control-Allow-Origin', '*');
+  const origin = req.headers.origin || '';
+  const allowed = originAllowed(origin);
+
+  res.setHeader('Access-Control-Allow-Origin', ALLOWED_ORIGINS.length ? (allowed ? origin : ALLOWED_ORIGINS[0]) : '*');
+  res.setHeader('Vary', 'Origin');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
   res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
+
+  if (!ALLOWED_ORIGINS.length) {
+    console.warn('ALLOWED_ORIGINS is not set — this endpoint is answering any origin. Set it before going live.');
+  }
+  if (!allowed) {
+    res.status(403).json({ error: 'This origin is not permitted to use this endpoint.' });
+    return;
+  }
+
+  const ip = (req.headers['x-forwarded-for'] || '').split(',')[0].trim() || req.socket?.remoteAddress || 'unknown';
+  if (req.method === 'POST' && rateLimited(ip)) {
+    res.status(429).json({ error: 'Too many requests in a short period. Wait a minute and try again.' });
+    return;
+  }
 
   if (req.method === 'OPTIONS') {
     res.status(204).end();
@@ -151,7 +213,9 @@ async function callLLM({ apiKey, messages, context }) {
   // little quality for a noticeably higher quota. Check
   // https://ai.google.dev/gemini-api/docs/models for the current lineup if
   // this ever 404s again — Google's flash-tier naming moves fairly often.
-  const model = 'gemini-3.6-flash';
+  // Overridable without a code change, because Google's flash-tier naming
+  // moves often enough that hard-coding it guarantees a future 404.
+  const model = process.env.GEMINI_MODEL || 'gemini-3.6-flash';
 
   const resp = await fetch(
     `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`,
